@@ -1,0 +1,119 @@
+* {
+  box-sizing: border-box;
+}
+html,
+body,
+#app {
+  height: 100%;
+  margin: 0;
+}
+body {
+  font-family: Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  background: #f5f7fb;
+  color: #172033;
+}
+.cw-page {
+  padding: 20px;
+}
+.cw-page-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  margin-bottom: 18px;
+}
+.cw-page-head h1 {
+  margin: 0 0 5px;
+  font-size: 23px;
+}
+.cw-page-head p {
+  margin: 0;
+  color: #7b8496;
+}
+.cw-card {
+  background: #fff;
+  border: 1px solid #e6e9ef;
+  border-radius: 10px;
+  box-shadow: 0 8px 24px rgba(15, 23, 42, 0.06);
+}
+.cw-grid-4 {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 14px;
+  margin-bottom: 16px;
+}
+.cw-stat {
+  background: #fff;
+  border: 1px solid #e6e9ef;
+  border-radius: 10px;
+  padding: 15px;
+  box-shadow: 0 8px 24px rgba(15, 23, 42, 0.06);
+}
+.cw-stat .top {
+  display: flex;
+  justify-content: space-between;
+  color: #7b8496;
+  font-size: 12px;
+}
+.cw-stat .value {
+  font-size: 26px;
+  font-weight: 720;
+  margin: 8px 0;
+}
+.cw-mono {
+  font-family: 'Cascadia Code', Consolas, Monaco, monospace;
+}
+.cw-timeline {
+  position: relative;
+  padding-left: 22px;
+}
+.cw-timeline:before {
+  content: '';
+  position: absolute;
+  left: 6px;
+  top: 4px;
+  bottom: 4px;
+  width: 1px;
+  background: #dfe4ec;
+}
+.cw-event {
+  position: relative;
+  padding-bottom: 14px;
+}
+.cw-dot {
+  position: absolute;
+  left: -20px;
+  top: 4px;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: #2563eb;
+  border: 2px solid #dbeafe;
+}
+.cw-event h4 {
+  margin: 0 0 3px;
+  font-size: 13px;
+}
+.cw-event p {
+  margin: 0;
+  color: #7b8496;
+  font-size: 12px;
+  line-height: 1.5;
+}
+.cw-pre {
+  margin: 0;
+  padding: 12px;
+  background: #0f172a;
+  color: #e2e8f0;
+  border-radius: 6px;
+  font-size: 12px;
+  line-height: 1.6;
+  max-height: 380px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+@media (max-width: 1100px) {
+  .cw-grid-4 {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}

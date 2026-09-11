@@ -1,0 +1,36 @@
+# B2B Marketing Agent Harness — 默认配置
+# 优先级：内置默认值 < configs/config.yaml < .env < 真实环境变量（BH_ 前缀）
+
+server:
+  addr: ":8090"
+
+database:
+  host: 127.0.0.1
+  port: 5432
+  user: postgres
+  password: postgres
+  db: b2b_marketing_agent
+  sslmode: disable
+  # 未接 PostgreSQL 时使用内存存储（mock）
+  driver: memory        # memory | postgres
+
+redis:
+  addr: 127.0.0.1:6379
+  password: ""
+  db: 0
+  enabled: false        # 关闭时使用内存队列
+
+llm:
+  provider: mock        # mock | openai
+  model: mock-1
+  base_url: ""          # openai-compatible: https://api.openai.com/v1
+  api_key: ""
+  temperature: 0.3
+  max_tokens: 1024
+
+workspace:
+  name: Microchip Taiwan Demo
+  slug: microchip-tw
+  industry: semiconductor
+  region: TW
+  default_language: zh-TW

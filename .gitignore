@@ -1,0 +1,22 @@
+# 环境与产物
+.env
+.env.local
+*.local
+bin/
+dist/
+tmp/
+logs/
+
+# Go
+*.test
+*.out
+vendor/
+
+# 编辑器
+.idea/
+.vscode/
+*.swp
+
+# 系统
+.DS_Store
+Thumbs.db
