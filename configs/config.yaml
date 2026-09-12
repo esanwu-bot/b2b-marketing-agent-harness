@@ -28,6 +28,10 @@ llm:
   temperature: 0.3
   max_tokens: 1024
 
+policy:
+  # 演示人机协同闭环：外部发布动作进入审批中心待办（true=全自动放行）
+  auto_approve: false
+
 workspace:
   name: Microchip Taiwan Demo
   slug: microchip-tw

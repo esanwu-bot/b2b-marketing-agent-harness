@@ -20,3 +20,7 @@ vendor/
 # 系统
 .DS_Store
 Thumbs.db
+
+# 运行日志与设计素材
+*.log
+stitch_/

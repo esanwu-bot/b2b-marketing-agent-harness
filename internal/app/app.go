@@ -1,4 +1,4 @@
-// Package app 负责 Harness 的全部组件装配（Store / LLM / Tool / Policy / Runtime / Workflow）。
+﻿// Package app 负责 Harness 的全部组件装配（Store / LLM / Tool / Policy / Runtime / Workflow）。
 package app
 
 import (
@@ -85,4 +85,14 @@ func seedMemories(ctx context.Context, st store.Store) {
 // RunWorkflow 执行一个 Workflow（供 API / CLI / Scheduler 调用）。
 func (a *App) RunWorkflow(ctx context.Context, key, trigger string) (*domain.WorkflowRun, error) {
 	return a.Flow.Run(ctx, key, trigger)
+}
+
+// ResumeWorkflow 恢复一个 awaiting_approval 状态的 WorkflowRun，继续执行剩余步骤。
+func (a *App) ResumeWorkflow(ctx context.Context, runID string) (*domain.WorkflowRun, error) {
+	return a.Flow.Resume(ctx, runID)
+}
+
+// CancelWorkflow 终止一个 awaiting_approval / running 状态的 WorkflowRun。
+func (a *App) CancelWorkflow(ctx context.Context, runID, reason string) (*domain.WorkflowRun, error) {
+	return a.Flow.Cancel(ctx, runID, reason)
 }

@@ -1,4 +1,4 @@
-// Package httpapi 提供 Harness 的 REST + SSE 接口（供 Workbench 控制台消费）。
+﻿// Package httpapi 提供 Harness 的 REST + SSE 接口（供 Workbench 控制台消费）。
 package httpapi
 
 import (
@@ -220,6 +220,14 @@ func (s *Server) decide(w http.ResponseWriter, r *http.Request, status string) {
 		return
 	}
 	_ = s.app.Store.AppendEvent(r.Context(), domain.Event{Type: "approval." + status, AggregateType: "approval", AggregateID: id})
+	// 审批完成后，恢复（通过）或取消（拒绝）关联的工作流运行。
+	if apr.WorkflowRunID != "" {
+		if status == "approved" {
+			_, _ = s.app.ResumeWorkflow(r.Context(), apr.WorkflowRunID)
+		} else {
+			_, _ = s.app.CancelWorkflow(r.Context(), apr.WorkflowRunID, "审批被拒绝")
+		}
+	}
 	writeJSON(w, 200, map[string]any{"approval": apr})
 }
 

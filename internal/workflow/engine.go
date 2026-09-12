@@ -1,4 +1,4 @@
-// Package workflow 是 Workflow 引擎：按定义顺序编排 Agent / 审批 / 渠道发布。
+﻿// Package workflow 是 Workflow 引擎：按定义顺序编排 Agent / 审批 / 渠道发布。
 package workflow
 
 import (
@@ -15,6 +15,10 @@ import (
 	"github.com/esanwu-bot/b2b-marketing-agent-harness/internal/store"
 	"github.com/esanwu-bot/b2b-marketing-agent-harness/internal/tool"
 )
+
+// workflowApprovedKey 是 run.Context 中标记「本次运行已通过人工审批」的键。
+// 审批通过恢复后，后续外部动作（如渠道发布）不再重复触发策略审批。
+const workflowApprovedKey = "__workflow_approved"
 
 // Engine 执行 Workflow。
 type Engine struct {
@@ -56,79 +60,119 @@ func (e *Engine) Run(ctx context.Context, key, triggerType string) (*domain.Work
 	}
 	_ = e.Store.AppendEvent(ctx, domain.Event{Type: "workflow.run.started", AggregateType: "workflow_run", AggregateID: run.ID, Payload: map[string]any{"workflow": key}})
 
-	for i, s := range def.Steps {
+	return e.runFrom(ctx, run, def, 0)
+}
+
+// Resume 从 awaiting_approval 状态恢复一个 WorkflowRun，继续执行剩余步骤。
+// 调用方需先把对应审批单置为 approved。
+func (e *Engine) Resume(ctx context.Context, runID string) (*domain.WorkflowRun, error) {
+	run, err := e.Store.GetWorkflowRun(ctx, runID)
+	if err != nil {
+		return nil, err
+	}
+	if run == nil {
+		return nil, fmt.Errorf("workflow run 不存在: %s", runID)
+	}
+	if run.Status != domain.WfAwaitingApproval {
+		return run, nil
+	}
+
+	def, err := e.Store.GetWorkflow(ctx, run.WorkflowKey)
+	if err != nil {
+		return nil, err
+	}
+
+	// 将处于 awaiting_approval 的最后一步标记为 success，并从下一步继续。
+	last := len(run.Steps) - 1
+	if last >= 0 && run.Steps[last].Status == "awaiting_approval" {
+		run.Steps[last].Status = "success"
+	}
+	// 审批已通过：后续外部动作不再重复触发策略审批。
+	if run.Context == nil {
+		run.Context = map[string]any{}
+	}
+	run.Context[workflowApprovedKey] = true
+	run.Status = domain.WfRunning
+	run.FinishedAt = nil
+	_ = e.Store.UpdateWorkflowRun(ctx, run)
+	_ = e.Store.AppendEvent(ctx, domain.Event{Type: "workflow.run.resumed", AggregateType: "workflow_run", AggregateID: run.ID})
+
+	return e.runFrom(ctx, run, def, len(run.Steps))
+}
+
+// Cancel 终止一个 awaiting_approval / running 状态的 WorkflowRun。
+func (e *Engine) Cancel(ctx context.Context, runID, reason string) (*domain.WorkflowRun, error) {
+	run, err := e.Store.GetWorkflowRun(ctx, runID)
+	if err != nil {
+		return nil, err
+	}
+	if run == nil {
+		return nil, fmt.Errorf("workflow run 不存在: %s", runID)
+	}
+	if run.Status != domain.WfAwaitingApproval && run.Status != domain.WfRunning {
+		return run, nil
+	}
+	last := len(run.Steps) - 1
+	if last >= 0 && (run.Steps[last].Status == "awaiting_approval" || run.Steps[last].Status == "running") {
+		run.Steps[last].Status = "cancelled"
+		if run.Steps[last].Output == nil {
+			run.Steps[last].Output = map[string]any{}
+		}
+		run.Steps[last].Output["reason"] = reason
+	}
+	return e.finish(ctx, run, domain.WfCancelled, reason)
+}
+
+// runFrom 从 startIdx 开始顺序执行 def 的步骤，直到全部完成、失败或再次进入审批等待。
+func (e *Engine) runFrom(ctx context.Context, run *domain.WorkflowRun, def *domain.WorkflowDef, startIdx int) (*domain.WorkflowRun, error) {
+	for i := startIdx; i < len(def.Steps); i++ {
+		s := def.Steps[i]
 		stepRun := domain.WorkflowStepRun{Seq: i, Kind: s.Kind, Ref: refOf(s), Status: "running", At: time.Now()}
 
-		switch s.Kind {
-		case domain.WfAgent:
-			step, err := e.runAgentStep(ctx, run, s)
-			if err != nil {
-				stepRun.Status = "failed"
-				stepRun.Output = map[string]any{"error": err.Error()}
-				run.Steps = append(run.Steps, stepRun)
-				return e.finish(ctx, run, domain.WfFailed, err.Error())
-			}
-			stepRun.Status = step.status
-			stepRun.RunID = step.runID
-			stepRun.TaskID = step.taskID
-			stepRun.Output = step.output
-			if step.status == "awaiting_approval" {
-				run.Steps = append(run.Steps, stepRun)
-				return e.finish(ctx, run, domain.WfAwaitingApproval, "")
-			}
-
-		case domain.WfApproval:
-			apr := &domain.Approval{
-				WorkflowRunID: run.ID, Kind: "workflow_approval", Risk: domain.RiskExternal,
-				Summary: "Workflow 请求人工审批：" + def.Name, Status: "pending", RequestedBy: "workflow",
-			}
-			if err := e.Store.CreateApproval(ctx, apr); err != nil {
-				return nil, err
-			}
-			if e.Policy.AutoApprove() {
-				now := time.Now()
-				apr.Status, apr.DecidedBy, apr.DecidedAt = "approved", "policy:auto_approve", &now
-				_ = e.Store.UpdateApproval(ctx, apr)
-				stepRun.Status = "success"
-				stepRun.Output = map[string]any{"approval_id": apr.ID, "status": "auto_approved"}
-			} else {
-				stepRun.Status = "awaiting_approval"
-				stepRun.Output = map[string]any{"approval_id": apr.ID}
-				run.Steps = append(run.Steps, stepRun)
-				return e.finish(ctx, run, domain.WfAwaitingApproval, "")
-			}
-
-		case domain.WfChannel:
-			out, err := e.runChannelStep(ctx, run, s)
-			if err != nil {
-				stepRun.Status = "failed"
-				stepRun.Output = map[string]any{"error": err.Error()}
-				run.Steps = append(run.Steps, stepRun)
-				return e.finish(ctx, run, domain.WfFailed, err.Error())
-			}
-			stepRun.Status = "success"
-			stepRun.Output = out
-
-		default: // delay / condition 等：V1 直接跳过
-			stepRun.Status = "success"
-			stepRun.Output = map[string]any{"skipped": true}
+		res, err := e.executeStep(ctx, run, s)
+		if err != nil {
+			stepRun.Status = "failed"
+			stepRun.Output = map[string]any{"error": err.Error()}
+			run.Steps = append(run.Steps, stepRun)
+			return e.finish(ctx, run, domain.WfFailed, err.Error())
 		}
-
+		stepRun.Status = res.status
+		stepRun.RunID = res.runID
+		stepRun.TaskID = res.taskID
+		stepRun.Output = res.output
 		run.Steps = append(run.Steps, stepRun)
+		if res.status == "awaiting_approval" {
+			return e.finish(ctx, run, domain.WfAwaitingApproval, "")
+		}
 		_ = e.Store.UpdateWorkflowRun(ctx, run)
 	}
 
 	return e.finish(ctx, run, domain.WfSucceeded, "")
 }
 
-type agentStepResult struct {
-	status string
+// stepResult 是单步执行结果。
+type stepResult struct {
+	status string // success | failed | awaiting_approval
 	runID  string
 	taskID string
 	output map[string]any
 }
 
-func (e *Engine) runAgentStep(ctx context.Context, run *domain.WorkflowRun, s domain.WorkflowStepDef) (*agentStepResult, error) {
+// executeStep 调度执行单步，返回 stepResult（err 仅用于真正的执行失败）。
+func (e *Engine) executeStep(ctx context.Context, run *domain.WorkflowRun, s domain.WorkflowStepDef) (*stepResult, error) {
+	switch s.Kind {
+	case domain.WfAgent:
+		return e.executeAgentStep(ctx, run, s)
+	case domain.WfApproval:
+		return e.executeApprovalStep(ctx, run, s)
+	case domain.WfChannel:
+		return e.executeChannelStep(ctx, run, s)
+	default: // delay / condition 等：V1 直接跳过
+		return &stepResult{status: "success", output: map[string]any{"skipped": true}}, nil
+	}
+}
+
+func (e *Engine) executeAgentStep(ctx context.Context, run *domain.WorkflowRun, s domain.WorkflowStepDef) (*stepResult, error) {
 	ag, ok := e.Agents.Get(s.Agent)
 	if !ok {
 		return nil, fmt.Errorf("未注册的 Agent: %s", s.Agent)
@@ -162,7 +206,7 @@ func (e *Engine) runAgentStep(ctx context.Context, run *domain.WorkflowRun, s do
 		return nil, err
 	}
 
-	res := &agentStepResult{runID: result.RunID, taskID: task.ID, output: result.Output, status: "success"}
+	res := &stepResult{runID: result.RunID, taskID: task.ID, output: result.Output, status: "success"}
 	switch result.Status {
 	case string(domain.RunAwaitingApproval):
 		res.status = "awaiting_approval"
@@ -182,7 +226,29 @@ func (e *Engine) runAgentStep(ctx context.Context, run *domain.WorkflowRun, s do
 	return res, nil
 }
 
-func (e *Engine) runChannelStep(ctx context.Context, run *domain.WorkflowRun, s domain.WorkflowStepDef) (map[string]any, error) {
+func (e *Engine) executeApprovalStep(ctx context.Context, run *domain.WorkflowRun, _ domain.WorkflowStepDef) (*stepResult, error) {
+	def, _ := e.Store.GetWorkflow(ctx, run.WorkflowKey)
+	name := run.WorkflowKey
+	if def != nil {
+		name = def.Name
+	}
+	apr := &domain.Approval{
+		WorkflowRunID: run.ID, Kind: "workflow_approval", Risk: domain.RiskExternal,
+		Summary: "Workflow 请求人工审批：" + name, Status: "pending", RequestedBy: "workflow",
+	}
+	if err := e.Store.CreateApproval(ctx, apr); err != nil {
+		return nil, err
+	}
+	if e.Policy.AutoApprove() {
+		now := time.Now()
+		apr.Status, apr.DecidedBy, apr.DecidedAt = "approved", "policy:auto_approve", &now
+		_ = e.Store.UpdateApproval(ctx, apr)
+		return &stepResult{status: "success", output: map[string]any{"approval_id": apr.ID, "status": "auto_approved"}}, nil
+	}
+	return &stepResult{status: "awaiting_approval", output: map[string]any{"approval_id": apr.ID}}, nil
+}
+
+func (e *Engine) executeChannelStep(ctx context.Context, run *domain.WorkflowRun, s domain.WorkflowStepDef) (*stepResult, error) {
 	toolName := channelToolName(s.Channel, s.Action)
 	tl, ok := e.Tools.Get(toolName)
 	if !ok {
@@ -192,28 +258,31 @@ func (e *Engine) runChannelStep(ctx context.Context, run *domain.WorkflowRun, s 
 	for k, v := range s.Input {
 		args[k] = resolveValue(run.Context, v)
 	}
-	// 渠道动作通常为 external，需策略放行（demo/低风险环境可自动审批）。
+	// 若本次运行已通过人工审批（run.Context[__workflow_approved]=true），外部动作直接放行。
+	alreadyApproved, _ := run.Context[workflowApprovedKey].(bool)
+
 	decision := e.Policy.Evaluate(domain.Action{Tool: toolName, Risk: tl.Risk(), Arguments: args})
 	if decision.Outcome == domain.OutcomeDeny {
 		return nil, fmt.Errorf("策略拒绝渠道动作 %s：%s", toolName, decision.Reason)
 	}
-	if decision.Outcome == domain.OutcomeRequireApproval && !e.Policy.AutoApprove() {
+	if decision.Outcome == domain.OutcomeRequireApproval && !e.Policy.AutoApprove() && !alreadyApproved {
 		apr := &domain.Approval{WorkflowRunID: run.ID, Kind: toolName, Summary: "Workflow 请求发布：" + toolName, Payload: args, Risk: tl.Risk(), Status: "pending"}
-		_ = e.Store.CreateApproval(ctx, apr)
-		return map[string]any{"approval_id": apr.ID, "status": "awaiting_approval"}, fmt.Errorf("等待审批")
+		if err := e.Store.CreateApproval(ctx, apr); err != nil {
+			return nil, err
+		}
+		return &stepResult{status: "awaiting_approval", output: map[string]any{"approval_id": apr.ID, "status": "awaiting_approval"}}, nil
 	}
 	result, err := tl.Execute(ctx, args)
 	if err != nil {
 		return nil, err
 	}
-	return result.Output, nil
+	return &stepResult{status: "success", output: result.Output}, nil
 }
 
 func (e *Engine) finish(ctx context.Context, run *domain.WorkflowRun, status domain.WorkflowRunStatus, errMsg string) (*domain.WorkflowRun, error) {
 	now := time.Now()
 	run.Status = status
 	run.Error = errMsg
-	run.FinishedAt = &now
 	if status != domain.WfRunning && status != domain.WfAwaitingApproval {
 		run.FinishedAt = &now
 	}
